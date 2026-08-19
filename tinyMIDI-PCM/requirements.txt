@@ -1,0 +1,16 @@
+# tensorflow>=2.16 defaults to Keras 3, which tensorflow_model_optimization's
+# quantize_model() (the QAT checkpoint in train_guitar_midi.ipynb) does not support --
+# it raises "`to_quantize` can only either be a keras Sequential or Functional model."
+# even on a valid functional model, because the check is written against Keras 2 internals.
+#
+# tf_keras is listed explicitly so the notebook can bind to Keras 2 directly (import tf_keras
+# as keras) regardless of which TensorFlow version pip resolves and regardless of import
+# order in the kernel -- more robust than relying on the TF_USE_LEGACY_KERAS env var alone.
+tensorflow>=2.15,<2.17
+tf_keras>=2.15,<2.17
+tensorflow-model-optimization>=0.7.5
+librosa
+soundfile
+numpy
+pandas
+scipy
