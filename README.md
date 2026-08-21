@@ -1,23 +1,36 @@
 # TinyMIDI
 
-**Real-time guitar note detection on a microcontroller — no cloud, no phone, no host computer.**
+**Real-time note detection on a microcontroller — no cloud, no phone, no host computer.**
 
 TinyMIDI listens to a live guitar (or any monophonic instrument in its pitch
 range) through a microphone wired directly to a microcontroller, classifies
 the note being played with a quantized on-device neural network, and reports
-it as either a Serial log line or a wireless MIDI Note On/Off event. The
-entire pipeline — capture, spectral analysis, inference, and output — runs
-locally on the chip in well under the width of a played note.
+it out as a Serial log line, a MIDI-over-BLE Note On/Off event, MIDI DIN, or
+class-compliant USB-MIDI, depending on the build. The entire pipeline —
+capture, feature extraction, inference, and output — runs locally on the chip
+in well under the width of a played note.
 
-It targets two boards side by side from a shared model and feature front end,
-built as a final project for **EE 446** (embedded / tiny machine learning):
+This repo holds **four independent firmware builds** plus the notebooks that
+train them, all built around **EE 446** (embedded / tiny machine learning):
 
-| Target | Role |
-| --- | --- |
-| **ESP32** (I2S mic) | Primary demo target — fastest inference, ~31 updates/sec |
-| **Arduino Nano 33 BLE Sense** (onboard PDM mic) | Hardware-comparison target — same model, ~3–5× slower core |
+| Folder | Board | Feature front end | Output | Role |
+| --- | --- | --- | --- | --- |
+| [`midi_note_esp32/`](midi_note_esp32) | ESP32 (I2S mic) | Log-frequency filterbank + CNN | Serial (BLE MIDI wiring available) | **Primary demo target** — fastest inference, ~31 updates/sec |
+| [`midi_note_nano33/`](midi_note_nano33) | Arduino Nano 33 BLE Sense (onboard PDM mic) | Identical log-frequency filterbank + CNN | Serial + MIDI-over-BLE | Hardware-comparison target — same model, ~3–5× slower core |
+| [`STFTmodel_mic2midi_esp32/`](STFTmodel_mic2midi_esp32) | ESP32 (I2S mic) | Earlier iteration of the log-frequency front end + a distilled model | Serial + MIDI DIN (UART) | Earlier ESP32 port, kept for reference — superseded by `midi_note_esp32/` |
+| [`tinyMIDI-PCM/`](tinyMIDI-PCM) | ESP32-S3 (I2S mic or Pmod line-in) | None — raw 16 kHz PCM straight into the network | USB-MIDI | Separate experiment: no hand-engineered features, dual-head note+onset CNN |
+
+The first two share one model and one feature pipeline end to end (their
+generated headers are byte-identical) and are the focus of the rest of this
+README. The other two are self-contained explorations of different points in
+the same design space — each has its own README with full build, wiring, and
+tuning instructions; see [Other builds in this repo](#other-builds-in-this-repo)
+for a summary of how they differ.
 
 ## How it works
+
+The shared pipeline used by `midi_note_esp32/` and `midi_note_nano33/` (and,
+in an earlier form, by `STFTmodel_mic2midi_esp32/`):
 
 ```
 mic capture (I2S / PDM)
@@ -52,22 +65,30 @@ of a slightly longer analysis window (128 ms vs. an earlier 64 ms version).
 Because the feature front end is gain-invariant by construction, no
 microphone-level calibration step is required — only a coarse noise gate.
 
+`tinyMIDI-PCM/` takes a deliberately different approach and skips this front
+end entirely — see [below](#other-builds-in-this-repo).
+
 ## Repository layout
 
 ```
 TinyMIDI/
-├── midi_note_esp32/       Firmware for ESP32 (I2S mic, primary demo target)
-├── midi_note_nano33/      Firmware for Arduino Nano 33 BLE Sense (PDM mic)
+├── midi_note_esp32/            Firmware for ESP32 (I2S mic, primary demo target)
+├── midi_note_nano33/           Firmware for Arduino Nano 33 BLE Sense (PDM mic)
+├── STFTmodel_mic2midi_esp32/   Earlier ESP32 port (STFT/log-freq front end, distilled
+│                                 model, MIDI DIN out) — kept for reference
+├── tinyMIDI-PCM/               Separate ESP32-S3 experiment: raw-PCM dual-head CNN,
+│                                 USB-MIDI out, own training notebook
 ├── project-slicer-fixed.ipynb        Slices GuitarSet audio into labeled,
 │                                       leakage-safe training clips
 ├── TinyML_Final_Project_LogFreq.ipynb Trains, prunes, and quantizes the
-│                                       model; exports the firmware headers
+│                                       log-frequency model; exports firmware headers
 ├── EE 446 - Instructions to Reproduce Model Training Data.pdf
 │                                       Step-by-step data reproduction guide
 └── LICENSE                            GPL-3.0
 ```
 
-Each firmware folder is self-contained and holds an identical structure:
+`midi_note_esp32/` and `midi_note_nano33/` are self-contained and hold an
+identical structure:
 
 | File | Purpose |
 | --- | --- |
@@ -80,18 +101,22 @@ Each firmware folder is self-contained and holds an identical structure:
 | `midi_note_*.ino` | Board-specific sketch entry point |
 
 That the model and feature-generation headers are byte-identical across
-targets is intentional: retargeting the project to new hardware is a
-capture-and-output problem, not a model problem.
+these two targets is intentional: retargeting the project to new hardware is
+a capture-and-output problem, not a model problem. `STFTmodel_mic2midi_esp32/`
+follows the same general layout but from an earlier notebook run (different
+class count, a distilled model, no BLE), and `tinyMIDI-PCM/` has its own,
+differently-structured firmware and notebook — see their own READMEs for
+details.
 
 ## Model & training data
 
-The model is trained on [GuitarSet](https://guitarset.github.io/), a public
-dataset of annotated guitar recordings. `project-slicer-fixed.ipynb` slices
-the raw recordings into fixed-length windows, keeping a window only if a
-single pitch covers it almost entirely, and groups clips by source recording
-so that near-duplicate, overlapping windows (a 128 ms window advancing in
-32 ms hops shares 75% of its samples with its neighbor) can't leak across the
-train/validation split.
+The model used by `midi_note_esp32/` and `midi_note_nano33/` is trained on
+[GuitarSet](https://guitarset.github.io/), a public dataset of annotated
+guitar recordings. `project-slicer-fixed.ipynb` slices the raw recordings
+into fixed-length windows, keeping a window only if a single pitch covers it
+almost entirely, and groups clips by source recording so that near-duplicate,
+overlapping windows (a 128 ms window advancing in 32 ms hops shares 75% of
+its samples with its neighbor) can't leak across the train/validation split.
 
 `TinyML_Final_Project_LogFreq.ipynb` then:
 
@@ -108,13 +133,20 @@ Full, step-by-step reproduction instructions — including how to obtain and
 prepare the raw dataset — are in **`EE 446 - Instructions to Reproduce Model
 Training Data.pdf`**.
 
+`tinyMIDI-PCM/` trains against GuitarSet too, but with its own notebook
+(`train_guitar_midi.ipynb`) and its own export format (`class_labels.h`
+instead of `filterbank.h`/`model_params.h`), since its model has no
+feature-extraction front end to configure. `STFTmodel_mic2midi_esp32/` was
+produced by an earlier run of the same log-frequency notebook and is not
+regenerated by the current one.
+
 ## Getting started
 
 ### 1. Generate (or reuse) the model headers
 
 Run the two notebooks in order (slicer → trainer), or copy the four generated
-headers from an existing run into the target firmware folder. Both firmware
-folders expect the same four files.
+headers from an existing run into the target firmware folder. Both
+`midi_note_esp32/` and `midi_note_nano33/` expect the same four files.
 
 ### 2. Flash a board
 
@@ -174,6 +206,12 @@ will compile but capture nothing.
 | Windows | A BLE MIDI bridge (e.g. MIDIberry) + loopMIDI |
 | Linux | BlueZ with the BLE-MIDI ALSA sequencer bridge |
 
+This applies to `midi_note_nano33/` (BLE MIDI by default) and to
+`midi_note_esp32/` once BLE MIDI is wired in. `STFTmodel_mic2midi_esp32/`
+outputs MIDI DIN over a UART pin instead, and `tinyMIDI-PCM/` enumerates
+directly as a class-compliant **USB-MIDI** device — neither needs a BLE
+receiver; see their own READMEs for connection details.
+
 ## Measured performance
 
 | | ESP32 @ 240 MHz | Nano 33 BLE Sense @ 64 MHz (portable) | Nano 33 BLE Sense @ 64 MHz (CMSIS-DSP) |
@@ -195,15 +233,47 @@ Each board runs a **golden-vector self-test at boot**, replaying a canned
 clip through the full feature-extraction and inference pipeline and diffing
 the result against the value computed in the training notebook — a quick way
 to confirm a port hasn't silently drifted from the reference implementation.
+`STFTmodel_mic2midi_esp32/` and `tinyMIDI-PCM/` have their own performance
+numbers (different model sizes and, for the PCM build, no FFT stage at all)
+documented in their own READMEs.
+
+## Other builds in this repo
+
+### `STFTmodel_mic2midi_esp32/` — earlier ESP32 port
+
+An earlier ESP32 deployment of the same log-frequency approach, built while
+porting an Arduino "Lab 5" (micro-speech) TFLM workflow to guitar-note
+classification. It uses a distilled model (`distilled_student.weights.h5`,
+33 classes instead of the current 28), targets a plain ESP32 with an INMP441
+I2S mic, and outputs over **MIDI DIN** rather than BLE. It's kept in the repo
+for reference and comparison rather than as an active target — `midi_note_esp32/`
+is the maintained, current ESP32 build. See
+[`STFTmodel_mic2midi_esp32/README.md`](STFTmodel_mic2midi_esp32/README.md)
+for its own build steps, wiring, and tuning notes.
+
+### `tinyMIDI-PCM/` — raw-PCM, dual-head CNN on ESP32-S3
+
+A separate experiment that removes the FFT/filterbank front end entirely: a
+small dual-head convolutional network reads raw 16 kHz PCM directly, with one
+head classifying pitch and the other detecting note onsets, and streams the
+result out as class-compliant **USB-MIDI** — no host computer or BLE receiver
+needed. It targets the **ESP32-S3** specifically (for native USB-OTG),
+supports either an INMP441 I2S mic or a Digilent Pmod I2S2 line-in, and has
+its own training notebook (`train_guitar_midi.ipynb`) that performs
+quantization-aware INT8 training with a verification checkpoint ladder. Full
+details, wiring diagrams, and known limitations are in
+[`tinyMIDI-PCM/README.md`](tinyMIDI-PCM/README.md).
 
 ## Troubleshooting
 
-Both firmware folders print a status code (via Serial and, on the Nano 33,
-an RGB LED) for the most common failure modes: feature/model geometry
-mismatches between the generated headers, an undersized tensor arena, a
-failed microphone init, and BLE pairing issues. See the comments at the top
-of each `.ino` and the per-file headers for the full list of causes and
-fixes.
+Both `midi_note_esp32/` and `midi_note_nano33/` print a status code (via
+Serial and, on the Nano 33, an RGB LED) for the most common failure modes:
+feature/model geometry mismatches between the generated headers, an
+undersized tensor arena, a failed microphone init, and BLE pairing issues.
+See the comments at the top of each `.ino` and the per-file headers for the
+full list of causes and fixes. `STFTmodel_mic2midi_esp32/` and
+`tinyMIDI-PCM/` each document their own bring-up sequence and troubleshooting
+table in their own READMEs.
 
 ## License
 
